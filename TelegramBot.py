@@ -1,16 +1,11 @@
-from calendar import month
 import datetime
 import logging
 import json
-from turtle import update
 from matplotlib.pyplot import text
-from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
+from telegram import Update
 from telegram.ext import (
     Updater,
     CommandHandler,
-    MessageHandler,
-    Filters,
-    ConversationHandler,
     CallbackContext,
 )
 
@@ -27,6 +22,10 @@ def start(update: Update, context: CallbackContext) -> int:
     update.message.reply_text(
         'Olá! Use /set <Nome do evento> <Horario> <data> para setar um novo alarme!'
         'Exemplo: /set Flauta_bday 12:00 05/12'
+        '/unset <Nome do evento> para remover um evento já marcado'
+        '/show para mostrar os próximos 3 eventos'
+        '/help para rever os comandos'
+        'Qualquer dúvida contate o Flautinha'
         )
     
 def validateData(horario, date):
@@ -36,7 +35,6 @@ def validateData(horario, date):
         return False
     
     txtHora = horario.split(':')
-    print(txtHora)
     hora = txtHora[0]
     min = txtHora[1]
     if(hora.isnumeric() == False | min.isnumeric() == False):
@@ -52,6 +50,42 @@ def validateData(horario, date):
     if (int(dia) >= 32) | (int(mes) > 12):
         print("Ah")
         return False
+    return True
+
+def ordered_insert(infos):
+    insertDay, inserMonth= convertDateTime(infos['date'], '/')
+    insertHour, insertMin = convertDateTime(infos['horario'], ':')
+    inserted = False
+    with open("info.json", 'r+') as f:
+        d = f.readlines()
+        f.seek(0)
+        for i in d:
+            event_store = json.loads(i)
+            dia, mes = convertDateTime(event_store['date'], '/')
+            hora, min = convertDateTime(event_store['horario'], ':')
+            if (mes > inserMonth) & (inserted == False):
+                json.dump(infos, f)
+                inserted = True
+                f.write('\n')
+            if(mes == inserMonth) & (dia > insertDay) & (inserted == False):
+                 json.dump(infos, f)
+                 inserted = True
+                 f.write('\n')
+
+            if(mes == inserMonth) & (dia == insertDay) & (inserted == False):
+                if(hora > insertHour):
+                    json.dump(infos, f)
+                    inserted = True
+                    f.write('\n')
+                if(hora == insertHour):
+                    if(min > insertMin):
+                        json.dump(infos, f)
+                        inserted = True
+                        f.write('\n')
+                    else:
+                        return False
+            f.write(i)
+        f.truncate()
     return True
 
 def set(update: Update, context: CallbackContext)-> int:
@@ -72,20 +106,19 @@ def set(update: Update, context: CallbackContext)-> int:
 
     update.message.reply_text('Perfeitamente! O evento ' + name_event + ' foi adicionado para as ' + horario + 'h do dia ' + date)
     infos = {"name_event": name_event, "horario" : horario, "date" : date, "author": update.message.from_user.first_name, "chat_id" : update.message.chat_id}
-    with open("info.json", 'a') as fp:
-        json.dump(infos, fp)
-        fp.write('\n')
+    if not ordered_insert(infos):
+        update.message.reply_text('Erro de data! Verifique se não há nada marcado para o dia ou se digitou corretamente as informações')
 
 def show(update: Update, context: CallbackContext)-> int:
     data = open('info.json','r')
     update.message.reply_text('Atenção! Seus proximos eventos sao:\n')
-
     counter = 0
     infosShow = ''
     for line in data:
         event_store = json.loads(line)
-        infosShow += 'Evento: ' + event_store['name_event'] + ' no dia ' + event_store['date'] + ' às ' + event_store['horario'] + 'h\n'
-        counter += 1
+        if event_store['chat_id'] == update.message.chat_id:
+            infosShow += 'Evento: ' + event_store['name_event'] + ' no dia ' + event_store['date'] + ' às ' + event_store['horario'] + 'h\n'
+            counter += 1
         if counter == 3:
             break
     update.message.reply_text(infosShow)
@@ -95,7 +128,6 @@ def convertDateTime(dateString, separator):
     return int(txt[0]), int(txt[1])
 
 def removeEvent(pos):
-    
     with open('info.json', "r+") as f:
         d = f.readlines()
         counter = 0
@@ -106,6 +138,21 @@ def removeEvent(pos):
             counter += 1
         f.truncate()
 
+def unset(update: Update, context: CallbackContext)-> int:
+    removed = False
+    with open('info.json', "r+") as f:
+        d = f.readlines()
+        f.seek(0)
+        for i in d:
+            event_store = json.loads(i)
+            if(context.args[0] != event_store['name_event']):
+                f.write(i)
+            if(context.args[0] == event_store['name_event'] & update.message.chat_id == event_store['chat_id']):
+                removed = True
+                update.message.reply_text('Atenção: o evento ' + event_store['name_event'] + ' do dia ' + event_store['date'] + ' foi removido')
+        f.truncate()
+    if removed == False:
+        update.message.reply_text('Não foi possível localizar o evento')
 
 def dateVerify(context):
     selectedHour = [7,3,1]
@@ -116,6 +163,9 @@ def dateVerify(context):
     for line in data:
         event_store = json.loads(line)
         dia, mes = convertDateTime(event_store['date'], '/')
+        if(mes < dateNow.month) | (mes == dateNow.month) & (dia < dateNow.day):
+            remove.append(pos)
+     
         if(dia == dateNow.day) & (mes == dateNow.month):
             hora, min = convertDateTime(event_store['horario'], ':')
             if(abs(hora - dateNow.hour) in selectedHour):
@@ -126,24 +176,25 @@ def dateVerify(context):
                     textReminder = 'O evento '  + event_store['name_event'] + ' deve estar começando!! Contate os admins do canal para se manter informado!'
                     context.bot.send_message(chat_id= event_store['chat_id'], text=textReminder)
                     remove.append(pos)
-    
         pos += 1
     data.close()
     removeEvent(remove)
+
+
+
+
 def main() -> None:
     updater = Updater("5414205278:AAHZiwxErrwklPi6YXv9ik5EqsjDuJdakPI")
-
     # Get the dispatcher to register handlers
     dispatcher = updater.dispatcher
     dispatcher.add_handler(CommandHandler("start", start))
     dispatcher.add_handler(CommandHandler("set", set))
+    dispatcher.add_handler(CommandHandler("unset", unset))
     dispatcher.add_handler(CommandHandler("show", show))
     VerificationDate= updater.job_queue
     VerificationDate.run_repeating(dateVerify, interval= 10, first= 0)
     updater.start_polling()
     updater.idle()
-
-    print('a')
 
 
 if __name__ == '__main__':
